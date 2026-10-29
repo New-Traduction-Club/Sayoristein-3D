@@ -338,7 +338,7 @@ void main()
     if (shadows_enabled != 0)
     {
         float dist = distance(fragTexCoord, vec2(0.5, 0.5));
-        float vignette = smoothstep(0.8, 0.3, dist);
+        float vignette = clamp(smoothstep(0.95, 0.35, dist) * 0.35 + 0.65, 0.0, 1.0);
         result *= vignette;
     }
 
