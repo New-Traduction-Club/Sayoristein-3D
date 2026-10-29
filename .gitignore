@@ -52,5 +52,6 @@ server_log.txt
 raylib-5.0_win64_mingw-w64/
 raylib-6.2_win64_mingw-w64/
 raylib-6.2_linux_amd64/
+*.orig
 
 !raylib_server.c

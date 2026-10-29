@@ -132,21 +132,21 @@ init -10 python:
                             map_array.append(val)
                             
                 qm = getattr(persistent, "stein_quality_mode", 1)
-                w = internal_width if internal_width else width
-                h = internal_height if internal_height else height
-                
-                if qm == 4:
-                    rw, rh = int(w*1.5), int(h*1.5)
-                elif qm == 0:
-                    rw, rh = int(w), int(h)
-                elif qm == 1:
-                    rw, rh = int(w*0.5), int(h*0.5)
-                elif qm == 2:
-                    rw, rh = int(w*0.25), int(h*0.25)
-                elif qm == 3:
-                    rw, rh = int(w*0.1), int(h*0.1)
+                if internal_width and internal_height:
+                    rw, rh = internal_width, internal_height
                 else:
-                    rw, rh = 64, 64
+                    w = width
+                    h = height
+                    if qm == 4 or qm == 0:
+                        rw, rh = int(w), int(h)
+                    elif qm == 1:
+                        rw, rh = int(w*0.5), int(h*0.5)
+                    elif qm == 2:
+                        rw, rh = int(w*0.25), int(h*0.25)
+                    elif qm == 3:
+                        rw, rh = int(w*0.1), int(h*0.1)
+                    else:
+                        rw, rh = 64, 64
                 
                 self.render_width = max(64, rw)
                 self.render_height = max(64, rh)
@@ -520,8 +520,11 @@ init -10 python:
 
             render = renpy.Render(self.width, self.height)
             if self.surface:
-                scaled = pygame.transform.scale(self.surface, (self.width, self.height))
-                render.blit(scaled, (0, 0))
+                if self.surface.get_size() == (self.width, self.height):
+                    render.blit(self.surface, (0, 0))
+                else:
+                    scaled = pygame.transform.scale(self.surface, (self.width, self.height))
+                    render.blit(scaled, (0, 0))
 
             if self.damage_flash_timer > 0:
                 self.damage_flash_timer = max(0, self.damage_flash_timer - dt)
