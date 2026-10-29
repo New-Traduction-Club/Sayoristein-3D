@@ -1,6 +1,8 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
+typedef void (*PFNGLCLEARPROC)(unsigned int mask);
+extern PFNGLCLEARPROC glad_glClear;
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -1217,7 +1219,6 @@ int main(int argc, char *argv[]) {
 
     EndMode3D();
 
-    rlDisableDepthTest();
     Camera3D weapon_cam = {0};
     weapon_cam.position = (Vector3){0.0f, 0.0f, 0.0f};
     weapon_cam.target = (Vector3){0.0f, 0.0f, -1.0f};
@@ -1225,7 +1226,9 @@ int main(int argc, char *argv[]) {
     weapon_cam.fovy = camera.fovy;
     weapon_cam.projection = CAMERA_PERSPECTIVE;
     
+    rlSetClipPlanes(0.001, 100.0);
     BeginMode3D(weapon_cam);
+    glad_glClear(0x00000100);
     
     static float sway_x = 0.0f;
     static float sway_y = 0.0f;
@@ -1291,6 +1294,7 @@ int main(int argc, char *argv[]) {
     DrawModelEx(weaponModels[cur_wp], wp_pos, (Vector3){0,1,0}, 0.0f, (Vector3){wp_scale, wp_scale, wp_scale}, WHITE);
     
     EndMode3D();
+    rlSetClipPlanes(0.05, 4000.0);
     rlEnableDepthTest();
 
     EndTextureMode();
