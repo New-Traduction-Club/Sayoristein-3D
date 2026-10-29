@@ -1180,7 +1180,7 @@ int main(int argc, char *argv[]) {
             enemies[i].move_timer = 0.0f;
           }
           if (guyAnimsCount > 0) {
-            int max_frames = guyAnims[0].frameCount;
+            int max_frames = guyAnims[0].keyframeCount;
             if (enemies[i].anim_frame >= max_frames)
               enemies[i].anim_frame = 0;
             UpdateModelAnimation(guyModel, guyAnims[0], enemies[i].anim_frame);

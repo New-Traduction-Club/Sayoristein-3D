@@ -1,5 +1,5 @@
 Compile raylib linux:
-gcc game/core/raylib_server.c -o game/core/raylib_server -I./raylib-5.0_linux_amd64/include ./raylib-5.0_linux_amd64/lib/libraylib.a -lm -lpthread
+gcc game/core/raylib_server.c -o game/core/raylib_server -I./raylib-6.2_linux_amd64/include ./raylib-6.2_linux_amd64/lib/libraylib.a -lm -lpthread
 
 Example for raylib on windows:
-gcc game/core/raylib_server.c -o game/core/raylib_server.exe -O3 -msse2 -mfpmath=sse -I./raylib-5.0_win64_mingw-w64/include -L./raylib-5.0_win64_mingw-w64/lib -lraylib -lgdi32 -lwinmm -lpthread
+gcc game/core/raylib_server.c -o game/core/raylib_server.exe -O3 -msse2 -mfpmath=sse -I./raylib-6.2_win64_mingw-w64/include -L./raylib-6.2_win64_mingw-w64/lib -lraylib -lgdi32 -lwinmm -lpthread
