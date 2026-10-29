@@ -128,37 +128,6 @@ void SpawnProjectile(Vector3 pos, Vector3 dir, float speed, float damage, int te
   }
 }
 
-unsigned char *ExportImageToBMPMemory(Image image, int *fileSize) {
-  int dataSize = image.width * image.height * 4;
-  *fileSize = 54 + dataSize;
-  unsigned char *bmp = (unsigned char *)malloc(*fileSize);
-
-  // BITMAPFILEHEADER
-  bmp[0] = 'B';
-  bmp[1] = 'M';
-  *(int *)(bmp + 2) = *fileSize;
-  *(short *)(bmp + 6) = 0;
-  *(short *)(bmp + 8) = 0;
-  *(int *)(bmp + 10) = 54;
-
-  // BITMAPINFOHEADER
-  *(int *)(bmp + 14) = 40;
-  *(int *)(bmp + 18) = image.width;
-  *(int *)(bmp + 22) = -image.height;
-  *(short *)(bmp + 26) = 1;
-  *(short *)(bmp + 28) = 32;
-  *(int *)(bmp + 30) = 0;
-  *(int *)(bmp + 34) = dataSize;
-  *(int *)(bmp + 38) = 0;
-  *(int *)(bmp + 42) = 0;
-  *(int *)(bmp + 46) = 0;
-  *(int *)(bmp + 50) = 0;
-
-  memcpy(bmp + 54, image.data, dataSize);
-
-  return bmp;
-}
-
 Texture2D LoadFlippedTexture(const char *path) {
   Image img = LoadImage(path);
   ImageFlipVertical(&img);
@@ -1355,18 +1324,13 @@ int main(int argc, char *argv[]) {
     ImageFlipVertical(&img);
     ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
-    int fileSize = 0;
-    unsigned char *bmpData = ExportImageToBMPMemory(img, &fileSize);
+    int dataSize = img.width * img.height * 4;
+    int msg_type = 0;
+    fwrite(&msg_type, sizeof(int), 1, stdout);
+    fwrite(&dataSize, sizeof(int), 1, stdout);
+    fwrite(img.data, 1, dataSize, stdout);
+    fflush(stdout);
     UnloadImage(img);
-
-    if (bmpData) {
-      int msg_type = 0;
-      fwrite(&msg_type, sizeof(int), 1, stdout);
-      fwrite(&fileSize, sizeof(int), 1, stdout);
-      fwrite(bmpData, 1, fileSize, stdout);
-      fflush(stdout);
-      free(bmpData);
-    }
 
     BeginDrawing();
     ClearBackground(BLACK);

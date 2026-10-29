@@ -15,6 +15,10 @@ init -10 python:
             self.width = width
             self.height = height
             self.surface = None
+            self.surfaces = []
+            self.expected_frame_size = 0
+            self.front_idx = 0
+            self.back_idx = 0
             self.running = False
             
             import math
@@ -150,6 +154,14 @@ init -10 python:
                 
                 self.render_width = max(64, rw)
                 self.render_height = max(64, rh)
+                self.expected_frame_size = self.render_width * self.render_height * 4
+                self.surfaces = [
+                    pygame.Surface((self.render_width, self.render_height)),
+                    pygame.Surface((self.render_width, self.render_height))
+                ]
+                self.front_idx = 0
+                self.back_idx = 1
+                self.surface = self.surfaces[self.front_idx]
                             
                 # format: render_width, render_height, map_width, map_height, layers, is_arena_mode, [map_array], start_x, start_y, start_z, start_pitch, start_yaw
                 try:
@@ -215,8 +227,12 @@ init -10 python:
                             img_data += chunk
                         if len(img_data) < size: break
                             
-                        surf = pygame.image.load(io.BytesIO(img_data), "frame.bmp")
-                        self.surface = surf
+                        if size == self.expected_frame_size and self.surfaces:
+                            back_surf = self.surfaces[self.back_idx]
+                            back_surf.from_data(img_data)
+                            renpy.display.render.mutated_surface(back_surf)
+                            self.front_idx, self.back_idx = self.back_idx, self.front_idx
+                            self.surface = self.surfaces[self.front_idx]
                     elif msg_type == 1:
                         ev_data = b""
                         while len(ev_data) < 8:
@@ -684,6 +700,8 @@ init -10 python:
             
         def destroy(self):
             self.running = False
+            self.surface = None
+            self.surfaces = []
             if hasattr(self, 'process') and self.process:
                 try:
                     self.process.terminate()
