@@ -594,6 +594,23 @@ int main(int argc, char *argv[]) {
   int mb_strength_loc = GetShaderLocation(lighting_shader, "u_motion_blur_strength");
   int cam_vel_loc = GetShaderLocation(lighting_shader, "u_cam_velocity");
 
+  Shader cel_shader = LoadShader("game/core/cel_model.vs", "game/core/cel_model.fs");
+  int cel_light_dir_loc = GetShaderLocation(cel_shader, "u_light_dir");
+  int cel_light_col_loc = GetShaderLocation(cel_shader, "u_light_color");
+  int cel_amb_col_loc   = GetShaderLocation(cel_shader, "u_ambient_color");
+  int cel_view_pos_loc  = GetShaderLocation(cel_shader, "u_view_pos");
+  int cel_rim_pow_loc   = GetShaderLocation(cel_shader, "u_rim_power");
+  int cel_rim_col_loc   = GetShaderLocation(cel_shader, "u_rim_color");
+
+  for (int m = 0; m < guyModel.materialCount; m++) {
+    guyModel.materials[m].shader = cel_shader;
+  }
+  for (int i = 0; i < 4; i++) {
+    for (int m = 0; m < weaponModels[i].materialCount; m++) {
+      weaponModels[i].materials[m].shader = cel_shader;
+    }
+  }
+
   Camera3D camera = {0};
   camera.up = (Vector3){0.0f, 1.0f, 0.0f};
   camera.fovy = 60.0f;
@@ -1141,6 +1158,22 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    float t_cel = fmodf(current_cam.time_of_day, 24.0f);
+    float sunAngle_cel = ((t_cel - 6.0f) / 24.0f) * 6.28318530718f;
+    Vector3 world_light_dir = {cosf(sunAngle_cel), sinf(sunAngle_cel) > 0.2f ? sinf(sunAngle_cel) : 0.2f, 0.25f * cosf(sunAngle_cel)};
+    Vector3 world_light_col = (sinf(sunAngle_cel) > 0.0f) ? (Vector3){1.08f, 1.02f, 0.94f} : (Vector3){0.55f, 0.65f, 0.85f};
+    Vector3 world_amb_col = (sinf(sunAngle_cel) > 0.0f) ? (Vector3){0.65f, 0.70f, 0.82f} : (Vector3){0.40f, 0.44f, 0.58f};
+    Vector3 world_view_pos = {camera.position.x, camera.position.y, camera.position.z};
+    float world_rim_pow = 0.12f;
+    Vector3 world_rim_col = {0.75f, 0.85f, 1.0f};
+
+    SetShaderValue(cel_shader, cel_light_dir_loc, &world_light_dir, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_light_col_loc, &world_light_col, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_amb_col_loc, &world_amb_col, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_view_pos_loc, &world_view_pos, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_rim_pow_loc, &world_rim_pow, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(cel_shader, cel_rim_col_loc, &world_rim_col, SHADER_UNIFORM_VEC3);
+
     // enemies
     for (int i = 0; i < num_enemies; i++) {
       if (enemies[i].state >= 0) {
@@ -1260,6 +1293,20 @@ int main(int argc, char *argv[]) {
     
     weaponModels[cur_wp].transform = MatrixMultiply(MatrixMultiply(rotX, rotY), rotZ);
     
+    Vector3 wp_light_dir = {0.50f, 0.85f, 0.60f};
+    Vector3 wp_light_col = {1.15f, 1.10f, 1.05f};
+    Vector3 wp_amb_col = {0.72f, 0.74f, 0.80f};
+    Vector3 wp_view_pos = {0.0f, 0.0f, 0.0f};
+    float wp_rim_pow = 0.10f;
+    Vector3 wp_rim_col = {0.80f, 0.90f, 1.0f};
+
+    SetShaderValue(cel_shader, cel_light_dir_loc, &wp_light_dir, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_light_col_loc, &wp_light_col, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_amb_col_loc, &wp_amb_col, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_view_pos_loc, &wp_view_pos, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_rim_pow_loc, &wp_rim_pow, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(cel_shader, cel_rim_col_loc, &wp_rim_col, SHADER_UNIFORM_VEC3);
+
     DrawModelEx(weaponModels[cur_wp], wp_pos, (Vector3){0,1,0}, 0.0f, (Vector3){wp_scale, wp_scale, wp_scale}, WHITE);
     
     EndMode3D();
@@ -1354,6 +1401,7 @@ int main(int argc, char *argv[]) {
     UnloadModel(weaponModels[i]);
   }
   UnloadShader(lighting_shader);
+  UnloadShader(cel_shader);
   UnloadRenderTexture(target);
   UnloadRenderTexture(final_target);
   CloseWindow();
