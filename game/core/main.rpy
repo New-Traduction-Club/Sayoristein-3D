@@ -468,7 +468,7 @@ init python:
 
 
 # The screen that displays the main game engine.
-screen stein:
+screen stein():
     key "s" action None
     key "mouseup_3" action None
     key "K_LSHIFT" action None
@@ -610,5 +610,5 @@ label test_gpu:
     if not stein_require_native():
         return
     $ reset_stein_state(level=1)
-    call screen gpu_stein_test
+    call screen stein
     return
