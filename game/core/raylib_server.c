@@ -133,6 +133,10 @@ Texture2D LoadFlippedTexture(const char *path) {
   ImageFlipVertical(&img);
   Texture2D tex = LoadTextureFromImage(img);
   UnloadImage(img);
+  if (tex.id > 1) {
+    GenTextureMipmaps(&tex);
+    SetTextureFilter(tex, TEXTURE_FILTER_ANISOTROPIC_8X);
+  }
   return tex;
 }
 
@@ -231,7 +235,7 @@ void *input_listener(void *arg) {
       current_input.mouse_dx += packet.mouse_dx;
       current_input.mouse_dy += packet.mouse_dy;
 
-      if (!is_arena_mode) {
+      if (is_arena_mode != 1) {
         current_cam.time_of_day = packet.time_of_day;
       }
       current_cam.lighting_quality = packet.lighting_quality;
@@ -397,6 +401,311 @@ void StartNextArenaRound() {
         enemies[num_enemies].reload_timer = 0.0f;
         enemies[num_enemies].dodge_timer = 0.0f;
         num_enemies++;
+      }
+    }
+  }
+}
+
+typedef struct {
+  Vector4 planes[6]; // left, right, bottom, top, near, far
+} Frustum;
+
+static inline Frustum ExtractFrustum(Matrix viewProj) {
+  Frustum f;
+  f.planes[0] = (Vector4){viewProj.m3 + viewProj.m0, viewProj.m7 + viewProj.m4, viewProj.m11 + viewProj.m8, viewProj.m15 + viewProj.m12};
+  f.planes[1] = (Vector4){viewProj.m3 - viewProj.m0, viewProj.m7 - viewProj.m4, viewProj.m11 - viewProj.m8, viewProj.m15 - viewProj.m12};
+  f.planes[2] = (Vector4){viewProj.m3 + viewProj.m1, viewProj.m7 + viewProj.m5, viewProj.m11 + viewProj.m9, viewProj.m15 + viewProj.m13};
+  f.planes[3] = (Vector4){viewProj.m3 - viewProj.m1, viewProj.m7 - viewProj.m5, viewProj.m11 - viewProj.m9, viewProj.m15 - viewProj.m13};
+  f.planes[4] = (Vector4){viewProj.m3 + viewProj.m2, viewProj.m7 + viewProj.m6, viewProj.m11 + viewProj.m10, viewProj.m15 + viewProj.m14};
+  f.planes[5] = (Vector4){viewProj.m3 - viewProj.m2, viewProj.m7 - viewProj.m6, viewProj.m11 - viewProj.m10, viewProj.m15 - viewProj.m14};
+  for (int i = 0; i < 6; i++) {
+    float len = sqrtf(f.planes[i].x * f.planes[i].x + f.planes[i].y * f.planes[i].y + f.planes[i].z * f.planes[i].z);
+    if (len > 1e-6f) {
+      f.planes[i].x /= len;
+      f.planes[i].y /= len;
+      f.planes[i].z /= len;
+      f.planes[i].w /= len;
+    }
+  }
+  return f;
+}
+
+static inline bool FrustumContainsBox(Frustum f, BoundingBox box) {
+  for (int i = 0; i < 6; i++) {
+    Vector4 p = f.planes[i];
+    float px = (p.x > 0.0f) ? box.max.x : box.min.x;
+    float py = (p.y > 0.0f) ? box.max.y : box.min.y;
+    float pz = (p.z > 0.0f) ? box.max.z : box.min.z;
+    if (p.x * px + p.y * py + p.z * pz + p.w < 0.0f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+typedef struct {
+  Vector3 v0, v1, v2;
+  Vector3 normal;
+  float minY, maxY;
+  int is_walkable;
+} WorldTri;
+
+typedef struct {
+  int *indices;
+  int count;
+  int capacity;
+} WorldGridCell;
+
+typedef struct {
+  float minX, minZ;
+  float maxX, maxZ;
+  float cellSize;
+  int cols, rows;
+  WorldGridCell *cells;
+  WorldTri *triangles;
+  int tri_count;
+  bool is_initialized;
+} WorldGrid;
+
+static WorldGrid world_grid = {0};
+
+static inline float DistPointSegment2D(float px, float pz, float ax, float az,
+                                       float bx, float bz, float *closestX,
+                                       float *closestZ) {
+  float abx = bx - ax;
+  float abz = bz - az;
+  float apx = px - ax;
+  float apz = pz - az;
+
+  float ab_len_sq = abx * abx + abz * abz;
+  if (ab_len_sq < 1e-8f) {
+    *closestX = ax;
+    *closestZ = az;
+    return sqrtf(apx * apx + apz * apz);
+  }
+
+  float t = (apx * abx + apz * abz) / ab_len_sq;
+  if (t < 0.0f)
+    t = 0.0f;
+  else if (t > 1.0f)
+    t = 1.0f;
+
+  *closestX = ax + t * abx;
+  *closestZ = az + t * abz;
+  float dx = px - *closestX;
+  float dz = pz - *closestZ;
+  return sqrtf(dx * dx + dz * dz);
+}
+
+static inline bool PointInTriangle2D(float px, float pz, Vector3 a, Vector3 b,
+                                     Vector3 c, float *outY) {
+  float v0x = c.x - a.x, v0z = c.z - a.z;
+  float v1x = b.x - a.x, v1z = b.z - a.z;
+  float v2x = px - a.x,  v2z = pz - a.z;
+
+  float dot00 = v0x * v0x + v0z * v0z;
+  float dot01 = v0x * v1x + v0z * v1z;
+  float dot02 = v0x * v2x + v0z * v2z;
+  float dot11 = v1x * v1x + v1z * v1z;
+  float dot12 = v1x * v2x + v1z * v2z;
+
+  float invDenom = 1.0f / (dot00 * dot11 - dot01 * dot01 + 1e-10f);
+  float u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+  float v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+
+  const float eps = -0.005f;
+  if (u >= eps && v >= eps && (u + v) <= (1.0f - eps)) {
+    *outY = a.y + v * (b.y - a.y) + u * (c.y - a.y);
+    return true;
+  }
+  return false;
+}
+
+void InitWorldGrid(Model model, float cellSize) {
+  if (world_grid.is_initialized) return;
+
+  float minX = 1e9f, minZ = 1e9f, maxX = -1e9f, maxZ = -1e9f;
+  int total_tris = 0;
+  for (int m = 0; m < model.meshCount; m++) {
+    Mesh *mesh = &model.meshes[m];
+    total_tris += mesh->triangleCount;
+    for (int v = 0; v < mesh->vertexCount; v++) {
+      float x = mesh->vertices[v * 3];
+      float z = mesh->vertices[v * 3 + 2];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+  }
+
+  minX -= 4.0f; minZ -= 4.0f;
+  maxX += 4.0f; maxZ += 4.0f;
+
+  world_grid.minX = minX;
+  world_grid.minZ = minZ;
+  world_grid.maxX = maxX;
+  world_grid.maxZ = maxZ;
+  world_grid.cellSize = cellSize;
+  world_grid.cols = (int)ceilf((maxX - minX) / cellSize);
+  world_grid.rows = (int)ceilf((maxZ - minZ) / cellSize);
+  world_grid.tri_count = total_tris;
+  world_grid.triangles = (WorldTri *)malloc(total_tris * sizeof(WorldTri));
+  world_grid.cells = (WorldGridCell *)calloc(world_grid.cols * world_grid.rows, sizeof(WorldGridCell));
+
+  int tri_idx = 0;
+  for (int m = 0; m < model.meshCount; m++) {
+    Mesh *mesh = &model.meshes[m];
+    for (int t = 0; t < mesh->triangleCount; t++) {
+      int i0 = mesh->indices ? mesh->indices[t * 3] : (t * 3);
+      int i1 = mesh->indices ? mesh->indices[t * 3 + 1] : (t * 3 + 1);
+      int i2 = mesh->indices ? mesh->indices[t * 3 + 2] : (t * 3 + 2);
+
+      Vector3 v0 = {mesh->vertices[i0 * 3], mesh->vertices[i0 * 3 + 1], mesh->vertices[i0 * 3 + 2]};
+      Vector3 v1 = {mesh->vertices[i1 * 3], mesh->vertices[i1 * 3 + 1], mesh->vertices[i1 * 3 + 2]};
+      Vector3 v2 = {mesh->vertices[i2 * 3], mesh->vertices[i2 * 3 + 1], mesh->vertices[i2 * 3 + 2]};
+
+      Vector3 e1 = {v1.x - v0.x, v1.y - v0.y, v1.z - v0.z};
+      Vector3 e2 = {v2.x - v0.x, v2.y - v0.y, v2.z - v0.z};
+      Vector3 n = {
+        e1.y * e2.z - e1.z * e2.y,
+        e1.z * e2.x - e1.x * e2.z,
+        e1.x * e2.y - e1.y * e2.x
+      };
+      float nlen = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+      if (nlen > 1e-6f) {
+        n.x /= nlen; n.y /= nlen; n.z /= nlen;
+      }
+
+      WorldTri *wt = &world_grid.triangles[tri_idx];
+      wt->v0 = v0; wt->v1 = v1; wt->v2 = v2;
+      wt->normal = n;
+      wt->minY = fminf(v0.y, fminf(v1.y, v2.y));
+      wt->maxY = fmaxf(v0.y, fmaxf(v1.y, v2.y));
+      wt->is_walkable = (n.y >= 0.70f);
+
+      float t_minX = fminf(v0.x, fminf(v1.x, v2.x));
+      float t_maxX = fmaxf(v0.x, fmaxf(v1.x, v2.x));
+      float t_minZ = fminf(v0.z, fminf(v1.z, v2.z));
+      float t_maxZ = fmaxf(v0.z, fmaxf(v1.z, v2.z));
+
+      int c0 = (int)floorf((t_minX - minX) / cellSize);
+      int c1 = (int)floorf((t_maxX - minX) / cellSize);
+      int r0 = (int)floorf((t_minZ - minZ) / cellSize);
+      int r1 = (int)floorf((t_maxZ - minZ) / cellSize);
+
+      if (c0 < 0) c0 = 0; if (c1 >= world_grid.cols) c1 = world_grid.cols - 1;
+      if (r0 < 0) r0 = 0; if (r1 >= world_grid.rows) r1 = world_grid.rows - 1;
+
+      for (int r = r0; r <= r1; r++) {
+        for (int c = c0; c <= c1; c++) {
+          WorldGridCell *cell = &world_grid.cells[r * world_grid.cols + c];
+          if (cell->count >= cell->capacity) {
+            cell->capacity = cell->capacity == 0 ? 8 : cell->capacity * 2;
+            cell->indices = (int *)realloc(cell->indices, cell->capacity * sizeof(int));
+          }
+          cell->indices[cell->count++] = tri_idx;
+        }
+      }
+      tri_idx++;
+    }
+  }
+  world_grid.is_initialized = true;
+}
+
+void FreeWorldGrid(void) {
+  if (!world_grid.is_initialized) return;
+  if (world_grid.cells != NULL) {
+    int total_cells = world_grid.cols * world_grid.rows;
+    for (int i = 0; i < total_cells; i++) {
+      if (world_grid.cells[i].indices != NULL) {
+        free(world_grid.cells[i].indices);
+      }
+    }
+    free(world_grid.cells);
+    world_grid.cells = NULL;
+  }
+  if (world_grid.triangles != NULL) {
+    free(world_grid.triangles);
+    world_grid.triangles = NULL;
+  }
+  world_grid.is_initialized = false;
+}
+
+float GetGroundHeight(float px, float pz, float current_y, float max_step) {
+  if (!world_grid.is_initialized) return 0.0f;
+
+  int col = (int)floorf((px - world_grid.minX) / world_grid.cellSize);
+  int row = (int)floorf((pz - world_grid.minZ) / world_grid.cellSize);
+
+  float best_y = -999.0f;
+  float max_allowed_y = current_y + max_step;
+
+  if (col >= 0 && col < world_grid.cols && row >= 0 && row < world_grid.rows) {
+    WorldGridCell *cell = &world_grid.cells[row * world_grid.cols + col];
+    for (int i = 0; i < cell->count; i++) {
+      WorldTri *wt = &world_grid.triangles[cell->indices[i]];
+      if (!wt->is_walkable) continue;
+
+      float tri_y = 0.0f;
+      if (PointInTriangle2D(px, pz, wt->v0, wt->v1, wt->v2, &tri_y)) {
+        if (tri_y <= max_allowed_y && tri_y > best_y) {
+          best_y = tri_y;
+        }
+      }
+    }
+  }
+
+  if (best_y < -900.0f) {
+    if (px >= -40.0f && px <= 40.0f && pz >= -31.0f && pz <= 31.0f) {
+      best_y = -1.09f;
+    } else {
+      best_y = -1000.0f;
+    }
+  }
+  return best_y;
+}
+
+void ResolveWalls(float *px, float *pz, float player_y, float radius, float height, float step_height) {
+  if (!world_grid.is_initialized) return;
+
+  float p_minY = player_y + step_height;
+  float p_maxY = player_y + height;
+
+  int c0 = (int)floorf((*px - radius - world_grid.minX) / world_grid.cellSize);
+  int c1 = (int)floorf((*px + radius - world_grid.minX) / world_grid.cellSize);
+  int r0 = (int)floorf((*pz - radius - world_grid.minZ) / world_grid.cellSize);
+  int r1 = (int)floorf((*pz + radius - world_grid.minZ) / world_grid.cellSize);
+
+  if (c0 < 0) c0 = 0; if (c1 >= world_grid.cols) c1 = world_grid.cols - 1;
+  if (r0 < 0) r0 = 0; if (r1 >= world_grid.rows) r1 = world_grid.rows - 1;
+
+  for (int iter = 0; iter < 3; iter++) {
+    for (int r = r0; r <= r1; r++) {
+      for (int c = c0; c <= c1; c++) {
+        WorldGridCell *cell = &world_grid.cells[r * world_grid.cols + c];
+        for (int i = 0; i < cell->count; i++) {
+          WorldTri *wt = &world_grid.triangles[cell->indices[i]];
+          if (wt->is_walkable) continue;
+
+          if (wt->maxY <= p_minY || wt->minY >= p_maxY) continue;
+
+          Vector3 pts[3] = {wt->v0, wt->v1, wt->v2};
+          for (int e = 0; e < 3; e++) {
+            Vector3 a = pts[e];
+            Vector3 b = pts[(e + 1) % 3];
+
+            float closeX, closeZ;
+            float dist = DistPointSegment2D(*px, *pz, a.x, a.z, b.x, b.z, &closeX, &closeZ);
+            if (dist < radius && dist > 1e-5f) {
+              float push = radius - dist;
+              float nx = (*px - closeX) / dist;
+              float nz = (*pz - closeZ) / dist;
+              *px += nx * push;
+              *pz += nz * push;
+            }
+          }
+        }
       }
     }
   }
@@ -603,11 +912,73 @@ int main(int argc, char *argv[]) {
   int cel_rim_col_loc   = GetShaderLocation(cel_shader, "u_rim_color");
 
   for (int m = 0; m < guyModel.materialCount; m++) {
-    guyModel.materials[m].shader = cel_shader;
+    Texture2D *tex = &guyModel.materials[m].maps[MATERIAL_MAP_DIFFUSE].texture;
+    if (tex->id > 1) {
+      GenTextureMipmaps(tex);
+      SetTextureFilter(*tex, TEXTURE_FILTER_ANISOTROPIC_8X);
+    }
   }
+
+  Model world3DModel = {0};
+  bool has_world3d_model = false;
+  BoundingBox *world3d_mesh_boxes = NULL;
+
+  const char *model_path = NULL;
+  float grid_cell_size = 2.0f;
+
+  if (is_arena_mode == 3) {
+    if (FileExists("game/models/minecraft-city.glb")) {
+      model_path = "game/models/minecraft-city.glb";
+    }
+    grid_cell_size = 4.0f;
+  } else if (is_arena_mode == 2) {
+    if (FileExists("game/models/construction-school.glb")) {
+      model_path = "game/models/construction-school.glb";
+    }
+    grid_cell_size = 2.0f;
+  }
+
+  if (model_path != NULL) {
+    world3DModel = LoadModel(model_path);
+    has_world3d_model = true;
+    InitWorldGrid(world3DModel, grid_cell_size);
+    world3d_mesh_boxes = (BoundingBox *)malloc(world3DModel.meshCount * sizeof(BoundingBox));
+    for (int m = 0; m < world3DModel.meshCount; m++) {
+      world3d_mesh_boxes[m] = GetMeshBoundingBox(world3DModel.meshes[m]);
+    }
+    for (int m = 0; m < world3DModel.materialCount; m++) {
+      Texture2D *tex = &world3DModel.materials[m].maps[MATERIAL_MAP_DIFFUSE].texture;
+      if (tex->id > 1) {
+        GenTextureMipmaps(tex);
+        SetTextureFilter(*tex, TEXTURE_FILTER_ANISOTROPIC_8X);
+      }
+    }
+  }
+
   for (int i = 0; i < 4; i++) {
     for (int m = 0; m < weaponModels[i].materialCount; m++) {
-      weaponModels[i].materials[m].shader = cel_shader;
+      Texture2D *tex = &weaponModels[i].materials[m].maps[MATERIAL_MAP_DIFFUSE].texture;
+      if (tex->id > 1) {
+        GenTextureMipmaps(tex);
+        SetTextureFilter(*tex, TEXTURE_FILTER_ANISOTROPIC_8X);
+      }
+    }
+  }
+
+  bool enable_cel_shading = true;
+  if (enable_cel_shading) {
+    for (int m = 0; m < guyModel.materialCount; m++) {
+      guyModel.materials[m].shader = cel_shader;
+    }
+    for (int i = 0; i < 4; i++) {
+      for (int m = 0; m < weaponModels[i].materialCount; m++) {
+        weaponModels[i].materials[m].shader = cel_shader;
+      }
+    }
+    if (has_world3d_model) {
+      for (int m = 0; m < world3DModel.materialCount; m++) {
+        world3DModel.materials[m].shader = cel_shader;
+      }
     }
   }
 
@@ -902,7 +1273,7 @@ int main(int argc, char *argv[]) {
         active_enemies++;
     }
 
-    if (is_arena_mode) {
+    if (is_arena_mode == 1) {
       total_arena_time += dt;
       current_cam.time_of_day = fmodf(12.0f + total_arena_time * 0.04f, 24.0f);
 
@@ -945,20 +1316,25 @@ int main(int argc, char *argv[]) {
     int pz = (int)roundf(current_cam.z / 2.0f);
 
     float max_z = -1000.0f;
-    for (int l = 0; l < map_layers; l++) {
-      if (GetBlock(px, l, pz) > 0) {
-        float top_z = (l * 2.0f) + 2.0f;
-        if (top_z > max_z && top_z <= current_cam.y + 1.5f) {
-          max_z = top_z;
+    if (is_arena_mode >= 2) {
+      max_z = GetGroundHeight(current_cam.x, current_cam.z, current_cam.y, 0.45f);
+    } else {
+      for (int l = 0; l < map_layers; l++) {
+        if (GetBlock(px, l, pz) > 0) {
+          float top_z = (l * 2.0f) + 2.0f;
+          if (top_z > max_z && top_z <= current_cam.y + 1.5f) {
+            max_z = top_z;
+          }
         }
       }
-    }
-    if (max_z == -1000.0f) {
-      max_z = 1.0f;
+      if (max_z == -1000.0f) {
+        max_z = 1.0f;
+      }
     }
 
     if (current_cam.is_grounded == 0) {
-      current_cam.vel_y -= 35.0f * dt;
+      float grav = (is_arena_mode >= 2) ? 22.0f : 35.0f;
+      current_cam.vel_y -= grav * dt;
       current_cam.y += current_cam.vel_y * dt;
 
       if (current_cam.y <= max_z) {
@@ -967,24 +1343,48 @@ int main(int argc, char *argv[]) {
         current_cam.is_grounded = 1;
       }
     } else {
-      if (current_cam.y > max_z + 0.1f) {
+      float drop_thresh = (is_arena_mode >= 2) ? 0.40f : 0.15f;
+      if (current_cam.y > max_z + drop_thresh) {
         current_cam.is_grounded = 0;
       } else {
         current_cam.y = max_z;
         if (k_space) {
-          current_cam.vel_y = 15.0f;
+          current_cam.vel_y = (is_arena_mode >= 2) ? 7.5f : 15.0f;
           current_cam.is_grounded = 0;
         }
       }
     }
 
-    float speed = 4.0f * dt;
-    if (k_shift)
-      speed *= 1.5f;
+    if (is_arena_mode >= 2 && current_cam.y < -30.0f) {
+      current_cam.x = (is_arena_mode == 3) ? 290.0f : 0.0f;
+      current_cam.y = (is_arena_mode == 3) ? 25.0f : 0.0f;
+      current_cam.z = (is_arena_mode == 3) ? 316.0f : 24.0f;
+      current_cam.vel_y = 0.0f;
+      current_cam.is_grounded = 1;
+    }
 
-    float target_height = current_cam.y + 1.0f;
+    if (is_arena_mode >= 2) {
+      if (current_input.up) {
+        current_cam.y += 8.0f * dt;
+        current_cam.vel_y = 0.0f;
+        current_cam.is_grounded = 1;
+      }
+      if (current_input.down) {
+        current_cam.y = fmaxf(-10.0f, current_cam.y - 8.0f * dt);
+        current_cam.vel_y = 0.0f;
+        current_cam.is_grounded = (current_cam.y <= max_z + 0.1f);
+      }
+    }
+
+    float speed = (is_arena_mode >= 2 ? 6.5f : 4.0f) * dt;
+    if (k_shift)
+      speed *= (is_arena_mode == 3 ? 2.2f : 1.6f);
+
+    float base_eye = (is_arena_mode >= 2) ? 1.6f : 1.0f;
+    float crouch_offset = (is_arena_mode >= 2) ? 0.6f : 0.5f;
+    float target_height = current_cam.y + base_eye;
     if (k_ctrl && current_cam.is_grounded) {
-      target_height -= 0.5f;
+      target_height -= crouch_offset;
       speed *= 0.5f;
     }
 
@@ -1015,37 +1415,73 @@ int main(int argc, char *argv[]) {
       dz += rz * speed;
     }
 
-    float hitbox = 0.2f;
+    if (is_arena_mode >= 2) {
+      if (dx != 0.0f || dz != 0.0f) {
+        float targetX = current_cam.x + dx;
+        float targetZ = current_cam.z + dz;
 
-    // x collision
-    if (dx != 0.0f) {
-      float targetX = current_cam.x + dx;
-      int checkX = (int)roundf((targetX + (dx > 0 ? hitbox : -hitbox)) / 2.0f);
-      int pZ = (int)roundf(current_cam.z / 2.0f);
-      int pZ1 = (int)roundf((current_cam.z - hitbox) / 2.0f);
-      int pZ2 = (int)roundf((current_cam.z + hitbox) / 2.0f);
-      int layer = (int)floorf(current_cam.y / 2.0f);
+        float step_ground = GetGroundHeight(targetX, targetZ, current_cam.y, 0.45f);
+        float effective_y = current_cam.y;
+        if (current_cam.is_grounded && step_ground > current_cam.y && step_ground <= current_cam.y + 0.45f) {
+          effective_y = step_ground;
+        }
 
-      if (GetBlock(checkX, layer, pZ) == 0 &&
-          GetBlock(checkX, layer, pZ1) == 0 &&
-          GetBlock(checkX, layer, pZ2) == 0) {
+        ResolveWalls(&targetX, &targetZ, effective_y, 0.35f, 1.8f, 0.40f);
+
         current_cam.x = targetX;
-      }
-    }
-
-    // z collision
-    if (dz != 0.0f) {
-      float targetZ = current_cam.z + dz;
-      int checkZ = (int)roundf((targetZ + (dz > 0 ? hitbox : -hitbox)) / 2.0f);
-      int pX = (int)roundf(current_cam.x / 2.0f);
-      int pX1 = (int)roundf((current_cam.x - hitbox) / 2.0f);
-      int pX2 = (int)roundf((current_cam.x + hitbox) / 2.0f);
-      int layer = (int)floorf(current_cam.y / 2.0f);
-
-      if (GetBlock(pX, layer, checkZ) == 0 &&
-          GetBlock(pX1, layer, checkZ) == 0 &&
-          GetBlock(pX2, layer, checkZ) == 0) {
         current_cam.z = targetZ;
+
+        if (world_grid.is_initialized) {
+          current_cam.x = fmaxf(world_grid.minX + 1.0f, fminf(world_grid.maxX - 1.0f, current_cam.x));
+          current_cam.z = fmaxf(world_grid.minZ + 1.0f, fminf(world_grid.maxZ - 1.0f, current_cam.z));
+        } else {
+          current_cam.x = fmaxf(-42.0f, fminf(42.0f, current_cam.x));
+          current_cam.z = fmaxf(-32.0f, fminf(32.0f, current_cam.z));
+        }
+
+        if (current_cam.is_grounded) {
+          float new_ground = GetGroundHeight(current_cam.x, current_cam.z, current_cam.y, 0.45f);
+          if (new_ground >= current_cam.y - 0.40f && new_ground <= current_cam.y + 0.45f) {
+            current_cam.y = new_ground;
+          } else if (new_ground < current_cam.y - 0.40f) {
+            current_cam.is_grounded = 0;
+            current_cam.vel_y = 0.0f;
+          }
+        }
+      }
+    } else {
+      float hitbox = 0.2f;
+
+      // x collision
+      if (dx != 0.0f) {
+        float targetX = current_cam.x + dx;
+        int checkX = (int)roundf((targetX + (dx > 0 ? hitbox : -hitbox)) / 2.0f);
+        int pZ = (int)roundf(current_cam.z / 2.0f);
+        int pZ1 = (int)roundf((current_cam.z - hitbox) / 2.0f);
+        int pZ2 = (int)roundf((current_cam.z + hitbox) / 2.0f);
+        int layer = (int)floorf(current_cam.y / 2.0f);
+
+        if (GetBlock(checkX, layer, pZ) == 0 &&
+            GetBlock(checkX, layer, pZ1) == 0 &&
+            GetBlock(checkX, layer, pZ2) == 0) {
+          current_cam.x = targetX;
+        }
+      }
+
+      // z collision
+      if (dz != 0.0f) {
+        float targetZ = current_cam.z + dz;
+        int checkZ = (int)roundf((targetZ + (dz > 0 ? hitbox : -hitbox)) / 2.0f);
+        int pX = (int)roundf(current_cam.x / 2.0f);
+        int pX1 = (int)roundf((current_cam.x - hitbox) / 2.0f);
+        int pX2 = (int)roundf((current_cam.x + hitbox) / 2.0f);
+        int layer = (int)floorf(current_cam.y / 2.0f);
+
+        if (GetBlock(pX, layer, checkZ) == 0 &&
+            GetBlock(pX1, layer, checkZ) == 0 &&
+            GetBlock(pX2, layer, checkZ) == 0) {
+          current_cam.z = targetZ;
+        }
       }
     }
 
@@ -1067,7 +1503,35 @@ int main(int argc, char *argv[]) {
     ClearBackground(BLANK);
     BeginMode3D(camera);
 
-    if (dynamic_map != NULL) {
+    float t_cel = fmodf(current_cam.time_of_day, 24.0f);
+    float sunAngle_cel = ((t_cel - 6.0f) / 24.0f) * 6.28318530718f;
+    Vector3 world_light_dir = {cosf(sunAngle_cel), sinf(sunAngle_cel) > 0.2f ? sinf(sunAngle_cel) : 0.2f, 0.25f * cosf(sunAngle_cel)};
+    Vector3 world_light_col = (sinf(sunAngle_cel) > 0.0f) ? (Vector3){1.08f, 1.02f, 0.94f} : (Vector3){0.55f, 0.65f, 0.85f};
+    Vector3 world_amb_col = (sinf(sunAngle_cel) > 0.0f) ? (Vector3){0.65f, 0.70f, 0.82f} : (Vector3){0.40f, 0.44f, 0.58f};
+    Vector3 world_view_pos = {camera.position.x, camera.position.y, camera.position.z};
+    float world_rim_pow = 0.0f;
+    Vector3 world_rim_col = {0.75f, 0.85f, 1.0f};
+
+    SetShaderValue(cel_shader, cel_light_dir_loc, &world_light_dir, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_light_col_loc, &world_light_col, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_amb_col_loc, &world_amb_col, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_view_pos_loc, &world_view_pos, SHADER_UNIFORM_VEC3);
+    SetShaderValue(cel_shader, cel_rim_pow_loc, &world_rim_pow, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(cel_shader, cel_rim_col_loc, &world_rim_col, SHADER_UNIFORM_VEC3);
+
+    if (is_arena_mode >= 2 && has_world3d_model) {
+      Matrix matView = rlGetMatrixModelview();
+      Matrix matProj = rlGetMatrixProjection();
+      Matrix matVP = MatrixMultiply(matView, matProj);
+      Frustum frustum = ExtractFrustum(matVP);
+
+      for (int m = 0; m < world3DModel.meshCount; m++) {
+        if (world3d_mesh_boxes != NULL && !FrustumContainsBox(frustum, world3d_mesh_boxes[m])) {
+          continue;
+        }
+        DrawMesh(world3DModel.meshes[m], world3DModel.materials[world3DModel.meshMaterial[m]], world3DModel.transform);
+      }
+    } else if (dynamic_map != NULL) {
       for (int l = 0; l < map_layers; l++) {
         for (int z = 0; z < map_height; z++) {
           for (int x = 0; x < map_width; x++) {
@@ -1158,23 +1622,8 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    float t_cel = fmodf(current_cam.time_of_day, 24.0f);
-    float sunAngle_cel = ((t_cel - 6.0f) / 24.0f) * 6.28318530718f;
-    Vector3 world_light_dir = {cosf(sunAngle_cel), sinf(sunAngle_cel) > 0.2f ? sinf(sunAngle_cel) : 0.2f, 0.25f * cosf(sunAngle_cel)};
-    Vector3 world_light_col = (sinf(sunAngle_cel) > 0.0f) ? (Vector3){1.08f, 1.02f, 0.94f} : (Vector3){0.55f, 0.65f, 0.85f};
-    Vector3 world_amb_col = (sinf(sunAngle_cel) > 0.0f) ? (Vector3){0.65f, 0.70f, 0.82f} : (Vector3){0.40f, 0.44f, 0.58f};
-    Vector3 world_view_pos = {camera.position.x, camera.position.y, camera.position.z};
-    float world_rim_pow = 0.12f;
-    Vector3 world_rim_col = {0.75f, 0.85f, 1.0f};
-
-    SetShaderValue(cel_shader, cel_light_dir_loc, &world_light_dir, SHADER_UNIFORM_VEC3);
-    SetShaderValue(cel_shader, cel_light_col_loc, &world_light_col, SHADER_UNIFORM_VEC3);
-    SetShaderValue(cel_shader, cel_amb_col_loc, &world_amb_col, SHADER_UNIFORM_VEC3);
-    SetShaderValue(cel_shader, cel_view_pos_loc, &world_view_pos, SHADER_UNIFORM_VEC3);
-    SetShaderValue(cel_shader, cel_rim_pow_loc, &world_rim_pow, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(cel_shader, cel_rim_col_loc, &world_rim_col, SHADER_UNIFORM_VEC3);
-
-    // enemies
+    float char_rim_pow = 0.12f;
+    SetShaderValue(cel_shader, cel_rim_pow_loc, &char_rim_pow, SHADER_UNIFORM_FLOAT);
     for (int i = 0; i < num_enemies; i++) {
       if (enemies[i].state >= 0) {
         if (enemies[i].state < 3) {
@@ -1399,6 +1848,14 @@ int main(int argc, char *argv[]) {
   UnloadModel(floorModel);
   for (int i = 0; i < 4; i++) {
     UnloadModel(weaponModels[i]);
+  }
+  if (has_world3d_model) {
+    if (world3d_mesh_boxes != NULL) {
+      free(world3d_mesh_boxes);
+      world3d_mesh_boxes = NULL;
+    }
+    UnloadModel(world3DModel);
+    FreeWorldGrid();
   }
   UnloadShader(lighting_shader);
   UnloadShader(cel_shader);

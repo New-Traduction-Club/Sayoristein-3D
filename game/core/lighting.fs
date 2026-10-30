@@ -83,6 +83,11 @@ float rain_layer(vec2 uv, float t)
 void main()
 {
     vec4 texelColor = texture(texture0, fragTexCoord);
+    if (isnan(texelColor.r) || isnan(texelColor.g) || isnan(texelColor.b) ||
+        isinf(texelColor.r) || isinf(texelColor.g) || isinf(texelColor.b))
+    {
+        texelColor = vec4(0.0, 0.0, 0.0, 1.0);
+    }
     vec3 result = texelColor.rgb;
 
     float t = mod(time_of_day, 24.0);
@@ -321,18 +326,24 @@ void main()
 
     if (u_bloom != 0)
     {
-        vec2 offset = vec2(0.005, 0.005);
-        vec3 sum = texture(texture0, fragTexCoord + vec2(offset.x, 0.0)).rgb +
-                   texture(texture0, fragTexCoord - vec2(offset.x, 0.0)).rgb +
-                   texture(texture0, fragTexCoord + vec2(0.0, offset.y)).rgb +
-                   texture(texture0, fragTexCoord - vec2(0.0, offset.y)).rgb;
-        sum *= 0.25;
+        vec2 off1 = vec2(0.003, 0.003);
+        vec2 off2 = off1 * 0.7071;
+
+        vec3 c  = texture(texture0, fragTexCoord).rgb;
+        vec3 s0 = texture(texture0, fragTexCoord + vec2( off1.x, 0.0)).rgb;
+        vec3 s1 = texture(texture0, fragTexCoord - vec2( off1.x, 0.0)).rgb;
+        vec3 s2 = texture(texture0, fragTexCoord + vec2(0.0,  off1.y)).rgb;
+        vec3 s3 = texture(texture0, fragTexCoord - vec2(0.0, -off1.y)).rgb;
+        vec3 d0 = texture(texture0, fragTexCoord + vec2( off2.x,  off2.y)).rgb;
+        vec3 d1 = texture(texture0, fragTexCoord - vec2( off2.x,  off2.y)).rgb;
+        vec3 d2 = texture(texture0, fragTexCoord + vec2( off2.x, -off2.y)).rgb;
+        vec3 d3 = texture(texture0, fragTexCoord - vec2( off2.x, -off2.y)).rgb;
+
+        vec3 sum = c * 0.28 + (s0 + s1 + s2 + s3) * 0.11 + (d0 + d1 + d2 + d3) * 0.07;
 
         float lum = dot(sum, vec3(0.299, 0.587, 0.114));
-        if (lum > 0.7)
-        {
-            result += sum * 0.5;
-        }
+        float bloomFactor = smoothstep(1.0, 1.35, lum);
+        result += sum * bloomFactor * 0.5;
     }
 
     if (shadows_enabled != 0)

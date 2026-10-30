@@ -33,7 +33,13 @@ init -10 python:
             self.yaw = math.degrees(math.atan2(dirx, diry))
             
             self.pitch = 0.0
-            self.y = 3.0
+            is_3d_val = getattr(store, "is_3d_map", False)
+            if is_3d_val == 2:
+                self.y = 25.0
+            elif is_3d_val:
+                self.y = 0.0
+            else:
+                self.y = 3.0
             
             self.keys = {'w':False, 's':False, 'a':False, 'd':False, 
                         'left':False, 'right':False, 'up':False, 'down':False,
@@ -165,7 +171,15 @@ init -10 python:
                             
                 # format: render_width, render_height, map_width, map_height, layers, is_arena_mode, [map_array], start_x, start_y, start_z, start_pitch, start_yaw
                 try:
-                    arena_flag = 1 if self.is_arena_mode else 0
+                    is_3d = getattr(store, "is_3d_map", False)
+                    if is_3d == 2:
+                        arena_flag = 3
+                    elif is_3d:
+                        arena_flag = 2
+                    elif self.is_arena_mode:
+                        arena_flag = 1
+                    else:
+                        arena_flag = 0
                     enemies = getattr(store, "stein_enemies", [])
                     sprites = getattr(store, "stein_sprites", [])
                     spawn_points = getattr(store, "arena_spawn_points", [])
