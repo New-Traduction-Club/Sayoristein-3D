@@ -261,19 +261,11 @@ void main()
 
     if (texelColor.a > 0.0)
     {
-        result = result * tint * brightness;
+        result = mix(result, result * tint, 0.35);
 
         if (u_flash_intensity > 0.0)
         {
-            result += texelColor.rgb * vec3(1.3, 1.05, 0.65) * u_flash_intensity * 0.7;
-        }
-
-        if (u_flashlight_active > 0.0)
-        {
-            vec2 spotCenter = vec2(0.5, 0.5) + u_flashlight_offset;
-            float flash_dist = distance(fragTexCoord, spotCenter);
-            float spot = smoothstep(0.44, 0.04, flash_dist);
-            result += texelColor.rgb * vec3(1.12, 1.08, 0.95) * spot * 0.85 * u_flashlight_active;
+            result += texelColor.rgb * vec3(1.25, 1.10, 0.75) * u_flash_intensity * 0.15;
         }
     }
 
@@ -294,17 +286,8 @@ void main()
             vec4 colA = texture(texture0, offsetA);
             vec4 colB = texture(texture0, offsetB);
             
-            vec3 litA = (colA.a > 0.0) ? (colA.rgb * tint * brightness) : result;
-            vec3 litB = (colB.a > 0.0) ? (colB.rgb * tint * brightness) : result;
-            
-            if (u_flashlight_active > 0.0)
-            {
-                vec2 spotCenter = vec2(0.5, 0.5) + u_flashlight_offset;
-                float spotA = smoothstep(0.44, 0.04, distance(offsetA, spotCenter));
-                float spotB = smoothstep(0.44, 0.04, distance(offsetB, spotCenter));
-                if (colA.a > 0.0) litA += colA.rgb * vec3(1.12, 1.08, 0.95) * spotA * 0.85 * u_flashlight_active;
-                if (colB.a > 0.0) litB += colB.rgb * vec3(1.12, 1.08, 0.95) * spotB * 0.85 * u_flashlight_active;
-            }
+            vec3 litA = (colA.a > 0.0) ? mix(colA.rgb, colA.rgb * tint, 0.35) : result;
+            vec3 litB = (colB.a > 0.0) ? mix(colB.rgb, colB.rgb * tint, 0.35) : result;
             
             blurSum += (litA + litB) * 0.5 * weight;
             totalWeight += weight;

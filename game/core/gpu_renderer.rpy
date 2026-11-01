@@ -575,9 +575,7 @@ init -10 python:
                     heal_surf.fill((0, 255, 0, h_alpha))
                     render.blit(heal_surf, (0, 0))
 
-            if self.sight_img:
-                sw, sh = self.sight_img.get_size()
-                render.blit(self.sight_img, (self.width / 2 - sw / 2, self.height / 2 - sh / 2))
+
 
             if self.hit_marker_timer > 0:
                 self.hit_marker_timer = max(0, self.hit_marker_timer - dt)
